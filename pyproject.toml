@@ -1,12 +1,10 @@
 [project]
 name = "modpmv"
-version = "0.1.0"
-description = "Automatic YTPMV generator: audio + visuals"
+version = "0.2.0"
+description = "ModPMV V2 — Automatic YTPMV generation (audio + visuals) with a plugin system"
 readme = "README.md"
 requires-python = ">=3.9"
-authors = [
-  { name="ModPMV Contributors" }
-]
+authors = [{name="ModPMV Contributors"}]
 dependencies = [
   "PyQt6>=6.5",
   "pydub>=0.25.1",

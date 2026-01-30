@@ -1,16 +1,10 @@
 """
-Plugin discovery + loading for ModPMV.
-
-Behavior:
- - First, load entry points (groups: modpmv.plugins.audio, modpmv.plugins.visual)
- - Next, scan a `plugins` directory (path provided) for .py files and import them.
- - Return mapping: {'audio': {name: cls_or_instance}, 'visual': {...}}
+Plugin discovery (V2): find plugins in a folder or via entry points and return manifest.
 """
-from importlib import import_module
-import importlib.util
 import os
 import sys
-from typing import Dict, Any, Optional
+import importlib.util
+from typing import Dict, Any, List, Optional
 from importlib.metadata import entry_points
 from modpmv.plugins.base import AudioPlugin, VisualPlugin
 
@@ -18,12 +12,7 @@ def _load_from_entry_points(group: str) -> Dict[str, Any]:
     plugins = {}
     try:
         eps = entry_points()
-        groups = []
-        # entry_points() returns a mapping on py3.10+; handle both shapes:
-        if hasattr(eps, "select"):
-            groups = eps.select(group=group)
-        else:
-            groups = eps.get(group, []) if isinstance(eps, dict) else []
+        groups = eps.select(group=group) if hasattr(eps, "select") else eps.get(group, [])
     except Exception:
         groups = []
     for ep in groups:
@@ -32,7 +21,6 @@ def _load_from_entry_points(group: str) -> Dict[str, Any]:
             key = getattr(obj, "name", ep.name)
             plugins[key] = obj
         except Exception:
-            # ignore faulty plugin loads; could log
             continue
     return plugins
 
@@ -49,9 +37,7 @@ def _load_from_folder(folder: str) -> Dict[str, Any]:
         try:
             spec = importlib.util.spec_from_file_location(name, path)
             mod = importlib.util.module_from_spec(spec)
-            sys.modules[f"modpmv_plugin_{name}"] = mod
             spec.loader.exec_module(mod)  # type: ignore
-            # collect plugin classes
             for attr in dir(mod):
                 obj = getattr(mod, attr)
                 try:
@@ -68,24 +54,32 @@ def _load_from_folder(folder: str) -> Dict[str, Any]:
     return plugins
 
 def discover_plugins(plugin_folder: Optional[str] = "plugins") -> Dict[str, Dict[str, Any]]:
-    """
-    Returns structure:
-      {
-        "audio": {"plugin_name": PluginClassOrFactory},
-        "visual": {"plugin_name": PluginClassOrFactory}
-      }
-    """
     audio = {}
     visual = {}
-    # entry points
     audio.update(_load_from_entry_points("modpmv.plugins.audio"))
     visual.update(_load_from_entry_points("modpmv.plugins.visual"))
-    # folder fallback
     if plugin_folder:
-        folder_audio = os.path.join(plugin_folder, "audio")
-        folder_visual = os.path.join(plugin_folder, "visual")
-        # try both top-level plugin files and grouped folders
-        audio.update(_load_from_folder(os.path.join(plugin_folder, "")))
-        audio.update(_load_from_folder(folder_audio))
-        visual.update(_load_from_folder(folder_visual))
+        audio.update(_load_from_folder(os.path.join(plugin_folder, "audio")))
+        visual.update(_load_from_folder(os.path.join(plugin_folder, "visual")))
+        # also allow flat plugin files
+        audio.update(_load_from_folder(plugin_folder))
+        visual.update(_load_from_folder(plugin_folder))
     return {"audio": audio, "visual": visual}
+
+def list_plugins_manifest(plugin_folder: Optional[str] = "plugins") -> List[Dict[str, Any]]:
+    discovered = discover_plugins(plugin_folder)
+    manifest = []
+    for ptype in ("audio","visual"):
+        for name, cls in discovered.get(ptype, {}).items():
+            try:
+                manifest.append({
+                    "name": getattr(cls, "name", name),
+                    "type": ptype,
+                    "description": getattr(cls, "description", ""),
+                    "tags": getattr(cls, "tags", []),
+                    "class": cls
+                })
+            except Exception:
+                continue
+    manifest.sort(key=lambda m: (m["type"], m["name"]))
+    return manifest
