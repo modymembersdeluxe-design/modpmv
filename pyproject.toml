@@ -1,0 +1,17 @@
+[project]
+name = "modpmv"
+version = "0.1.0"
+description = "Automatic YTPMV generator: audio + visuals"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+  { name="ModPMV Contributors" }
+]
+dependencies = [
+  "PyQt6>=6.5",
+  "pydub>=0.25.1",
+  "moviepy>=1.0.3",
+  "librosa>=0.10.0",
+  "numpy>=1.24",
+  "soundfile>=0.12.1"
+]
