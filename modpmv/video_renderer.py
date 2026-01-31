@@ -1,17 +1,13 @@
-"""
-Video renderer V3:
-- render_video_from_module_data: per-channel compositor
-- render_preview helper for GUI
-- Two rendering modes:
-  - moviepy mode (uses moviepy to compose & write_videofile)
-  - ffmpeg mode (faster: optional; pipeline generation for frames is not fully implemented here but stubbed)
-"""
-import os, random, subprocess
+import os
+import random
 from typing import List, Optional, Tuple, Dict, Any
 from moviepy.editor import (AudioFileClip, VideoFileClip, ImageClip, ColorClip,
                             concatenate_videoclips, CompositeVideoClip)
 from .assets import find_video_for_sample, list_assets
 from .utils import ensure_dir
+
+# Import audio renderer helpers for preview audio generation
+from .audio_renderer import render_audio_from_module_data, export_audio_segment
 
 DEFAULT_ROW_SECONDS = 0.25
 DEFAULT_SIZE = (1280, 720)
@@ -47,7 +43,7 @@ def render_video_from_module_data(module_data: Dict[str, Any],
                                   mode: str = "moviepy") -> Tuple[str, List[str]]:
     """
     Render a full video for module_data. Returns (out_path, used_video_files).
-    Mode can be "moviepy" (default) or "ffmpeg" (stub: uses moviepy for now).
+    Mode can be "moviepy" (default) or "ffmpeg" (stub uses moviepy).
     """
     audio = AudioFileClip(audio_path)
     total = audio.duration
@@ -100,7 +96,6 @@ def render_video_from_module_data(module_data: Dict[str, Any],
                             channel_clip = None
                 if channel_clip is None:
                     channel_clip = _image_clip_for_row(image_asset_folders, seg_dur, size)
-                    # add small channel overlay indicator for debug / visibility
                     tint = ((ch_index * 37) % 255, (ch_index * 59) % 255, (ch_index * 83) % 255)
                     bar = ColorClip(size=(int(size[0]*0.15), int(size[1]*0.07)), color=tint).set_duration(seg_dur)
                     pos_x = int((ch_index % 8) * (size[0] * 0.02))
@@ -140,7 +135,6 @@ def render_video_from_module_data(module_data: Dict[str, Any],
     if mode == "moviepy":
         _write_video_moviepy(clips, audio, out_path, fps=fps)
     else:
-        # FFmpeg pipeline path (placeholder): invoke moviepy for now; future: generate frames and pipe to ffmpeg for speed
         _write_video_moviepy(clips, audio, out_path, fps=fps)
 
     try:
@@ -148,4 +142,59 @@ def render_video_from_module_data(module_data: Dict[str, Any],
     except Exception:
         pass
 
-    return out_path, list(dict.fromkeys(used_video_files))
+    # return unique used files preserving order
+    seen = []
+    unique_used = []
+    for f in used_video_files:
+        if f not in seen:
+            seen.append(f)
+            unique_used.append(f)
+    return out_path, unique_used
+
+def render_preview(module_path: str,
+                   audio_asset_folders: List[str],
+                   video_asset_folders: List[str],
+                   image_asset_folders: List[str],
+                   preview_seconds: float = 6.0,
+                   out_path: str = "output/preview.mp4",
+                   size: Tuple[int,int] = (640,360),
+                   visual_plugins: Optional[List] = None) -> str:
+    """
+    Parse module_path, render a short low-res preview of preview_seconds,
+    write to out_path and attempt to open it (Windows: os.startfile).
+    """
+    # lazy import parse to avoid top-level dependency ordering issues
+    from .mod_parser import parse
+    # parse module (text or binary if openmpt adapter available)
+    module_data = parse(module_path)
+    # render audio for the module, then trim/pad to preview_seconds
+    audio_seg = render_audio_from_module_data(module_data, audio_asset_folders, row_duration_ms=int(1000 * DEFAULT_ROW_SECONDS))
+    preview_ms = int(preview_seconds * 1000)
+    if len(audio_seg) > preview_ms:
+        audio_seg = audio_seg[:preview_ms]
+    elif len(audio_seg) < preview_ms:
+        # pad by repeating content if too short
+        needed = preview_ms - len(audio_seg)
+        if len(audio_seg) > 0:
+            audio_seg = audio_seg + audio_seg[:needed]
+        else:
+            from pydub import AudioSegment
+            audio_seg = AudioSegment.silent(duration=preview_ms)
+    ensure_dir(os.path.dirname(out_path) or ".")
+    preview_audio_path = out_path.replace(".mp4", ".mp3")
+    export_audio_segment(audio_seg, preview_audio_path)
+    # Use the same module_data to render the preview video (moviepy composition)
+    # For speed we keep the same module_data but row_seconds equals DEFAULT_ROW_SECONDS
+    preview_out, used = render_video_from_module_data(module_data, preview_audio_path, video_asset_folders, image_asset_folders, out_path, fps=24, size=size, row_seconds=DEFAULT_ROW_SECONDS, visual_plugins=visual_plugins, mode="moviepy")
+    # attempt to open preview in OS default player
+    try:
+        if os.name == "nt":
+            os.startfile(preview_out)
+        else:
+            import subprocess, shutil
+            opener = shutil.which("xdg-open") or shutil.which("open")
+            if opener:
+                subprocess.Popen([opener, preview_out])
+    except Exception:
+        pass
+    return preview_out
