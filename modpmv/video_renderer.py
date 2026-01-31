@@ -5,7 +5,11 @@ Two main modes:
 - moviepy: compose and write via moviepy (convenient)
 - ffmpeg: write per-row short files and use ffmpeg concat to stitch them (faster for long timelines)
 """
-import os, random, subprocess, tempfile, shutil
+import os
+import random
+import subprocess
+import tempfile
+import shutil
 from typing import List, Optional, Tuple, Dict, Any
 from moviepy.editor import (AudioFileClip, VideoFileClip, ImageClip, ColorClip,
                             concatenate_videoclips, CompositeVideoClip)
@@ -45,12 +49,15 @@ def _ffmpeg_concat(video_files: List[str], out_path: str, fps:int=24, audio_file
     listfile = os.path.join(tmpdir, "inputs.txt")
     with open(listfile, "w", encoding="utf-8") as fh:
         for vf in video_files:
-            fh.write(f"file '{os.path.abspath(vf).replace('\'','\\'')}'\n")
+            # Safely escape single quotes in the path by backslash so the concat file remains valid
+            abs_path = os.path.abspath(vf)
+            safe_path = abs_path.replace("'", "\\'")
+            fh.write("file '{}'\n".format(safe_path))
     # Try concat demuxer
     cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", listfile, "-c", "copy", out_path]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        # fallback: try re-encoding with standard codecs
+        # fallback: re-encode with libx264
         cmd2 = ["ffmpeg","-y","-f","concat","-safe","0","-i",listfile,"-c:v","libx264","-preset","fast","-crf","18", out_path]
         proc2 = subprocess.run(cmd2, capture_output=True, text=True)
         if proc2.returncode != 0:
@@ -64,7 +71,7 @@ def _ffmpeg_concat(video_files: List[str], out_path: str, fps:int=24, audio_file
         if proc3.returncode == 0:
             shutil.move(mux_out, out_path)
         else:
-            # keep original but signal warning
+            # keep original but signal warning (caller may log)
             pass
     shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -195,6 +202,7 @@ def render_preview(module_path: str,
                    size: Tuple[int,int] = (640,360),
                    visual_plugins: Optional[List] = None,
                    mode: str = "moviepy") -> str:
+    # lazy imports to avoid top-level cycles
     from .mod_parser import parse
     module_data = parse(module_path)
     audio_seg = render_audio_from_module_data(module_data, audio_asset_folders, row_duration_ms=int(1000*DEFAULT_ROW_SECONDS))
