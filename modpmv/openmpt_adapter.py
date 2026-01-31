@@ -1,29 +1,34 @@
 """
-OpenMPT adapter (improved diagnostics & constructor attempts).
+Module-Tracker Adapter (V4-Deluxe update)
 
-This adapter tries many constructor/factory patterns to work with differing
-Python wrappers for libopenmpt (pyopenmpt, omp4py, openmpt, libopenmpt, etc.).
+This adapter now targets a single (project-specific) binding package named
+'module-tracker' (importable as module_tracker or moduletracker). The previous
+attempts to detect omp4py / pyopenmpt / openmpt / libopenmpt / pymodopenmpt
+have been removed per project request.
 
-If it cannot construct a module object it raises a RuntimeError containing:
- - attempted constructors and their short tracebacks
- - a sample of top-level attributes on the binding
- - (if provided bytes) attempts using a temporary file
+The adapter still:
+- Tries several constructor patterns that are common across bindings.
+- Provides run_diagnostics(data) that prints attempted constructors and binding info.
+- Returns a ModuleWrapper with a normalized minimal API:
+    - title
+    - num_channels
+    - sample_names()
+    - order_list()
+    - num_patterns()
+    - pattern_rows(idx)
 
-Functions:
- - load_module_from_bytes(data: bytes) -> ModuleWrapper
- - dump_binding_info() -> str
- - run_diagnostics(data: Optional[bytes] = None) -> str
-
-If you run run_diagnostics with the module bytes and paste the output here I will
-extend the adapter to support that binding exactly.
+If you use a different binding package name, install/rename it to 'module-tracker' (or
+ensure it is importable as 'module_tracker' or 'moduletracker'), or modify the
+_BINDING_CANDIDATES below to match your package name.
 """
 from typing import Any, List, Tuple, Optional
 import traceback
-import tempfile
 import io
 import os
+import tempfile
 
-_BINDING_CANDIDATES = ("pyopenmpt", "openmpt", "omp4py", "libopenmpt", "pymodopenmpt")
+# Only attempt to import the single new package(s) requested
+_BINDING_CANDIDATES = ("module_tracker", "moduletracker")
 
 _binding = None
 _binding_name = None
@@ -43,126 +48,75 @@ def _list_attrs(bind) -> List[str]:
     except Exception:
         return []
 
-def _safe_call(fn_desc: str, fn):
+def _safe_call(fn):
     try:
-        val = fn()
-        return (True, None, val)
-    except Exception as e:
-        tb = traceback.format_exc()
-        return (False, tb, None)
+        return (True, None, fn())
+    except Exception:
+        return (False, traceback.format_exc(), None)
 
 def _attempt_with_bytes(bind, data: bytes) -> Tuple[Optional[Any], List[Tuple[str,str]]]:
     """
-    Attempt many constructor patterns that might accept raw bytes or file-like objects.
-    Returns (raw_module_or_None, attempts_list[(desc, trace_or_ok)])
+    Try a set of commonly used constructor/factory patterns for the module-tracker binding.
+    Returns (raw_module_or_None, attempts_list[(desc, trace_or_ok)]).
     """
     attempts = []
     raw = None
 
     def record(desc, ok, tb):
-        attempts.append((desc, "OK" if ok else (tb.splitlines()[0] if tb else "EXC")))
+        attempts.append((desc, "OK" if ok and tb is None else (tb.splitlines()[0] if tb else "OK(None)")))
 
-    # 1) Common top-level constructors
-    candidates = [
-        ("bind.Module(data)", lambda: getattr(bind, "Module")(data) if hasattr(bind, "Module") else None),
-        ("bind.ModuleFromMemory(data)", lambda: getattr(bind, "ModuleFromMemory")(data) if hasattr(bind, "ModuleFromMemory") else None),
-        ("bind.OpenMPTModule(data)", lambda: getattr(bind, "OpenMPTModule")(data) if hasattr(bind, "OpenMPTModule") else None),
-        ("bind.Mod(data)", lambda: getattr(bind, "Mod")(data) if hasattr(bind, "Mod") else None),
-        ("bind.load_module(data)", lambda: getattr(bind, "load_module")(data) if hasattr(bind, "load_module") else None),
-        ("bind.load(data)", lambda: getattr(bind, "load")(data) if hasattr(bind, "load") else None),
-        ("bind.open_module(data)", lambda: getattr(bind, "open_module")(data) if hasattr(bind, "open_module") else None),
-        ("bind.from_bytes(data)", lambda: getattr(bind, "from_bytes")(data) if hasattr(bind, "from_bytes") else None),
-    ]
-    for desc, fn in candidates:
-        ok, tb, val = _safe_call(desc, fn)
-        record(desc, ok, tb)
-        if ok and val is not None:
-            raw = val
-            break
-
-    if raw is not None:
-        return raw, attempts
-
-    # 2) Try factory on bind.Module (from_bytes, from_buffer, from_file)
+    # 1) bind.Module(data)
     if hasattr(bind, "Module"):
-        M = getattr(bind, "Module")
-        sub_candidates = [
-            ("bind.Module.from_bytes(data)", lambda: getattr(M, "from_bytes")(data) if hasattr(M, "from_bytes") else None),
-            ("bind.Module.from_buffer(data)", lambda: getattr(M, "from_buffer")(data) if hasattr(M, "from_buffer") else None),
-            ("bind.Module.load(data)", lambda: getattr(M, "load")(data) if hasattr(M, "load") else None),
-        ]
-        for desc, fn in sub_candidates:
-            ok, tb, val = _safe_call(desc, fn)
-            record(desc, ok, tb)
-            if ok and val is not None:
-                raw = val
-                break
-    if raw is not None:
-        return raw, attempts
+        ok, tb, val = _safe_call(lambda: getattr(bind, "Module")(data))
+        record("bind.Module(data)", ok, tb)
+        if ok and val is not None:
+            return val, attempts
 
-    # 3) Try passing a file-like object (io.BytesIO)
-    try:
-        bobj = io.BytesIO(data)
-        filelike_candidates = [
-            ("bind.load(BytesIO)", lambda: getattr(bind, "load")(bobj) if hasattr(bind, "load") else None),
-            ("bind.open_module(BytesIO)", lambda: getattr(bind, "open_module")(bobj) if hasattr(bind, "open_module") else None),
-        ]
-        for desc, fn in filelike_candidates:
-            ok, tb, val = _safe_call(desc, fn)
-            record(desc, ok, tb)
-            if ok and val is not None:
-                raw = val
-                break
-    except Exception as e:
-        attempts.append(("BytesIO attempt", traceback.format_exc()))
-
-    if raw is not None:
-        return raw, attempts
-
-    # 4) Some bindings require a filename. Write to temp file and try filename-based factories.
-    tmp_path = None
-    try:
-        fd, tmp_path = tempfile.mkstemp(suffix=".mod")
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-        file_candidates = [
-            ("bind.load_module(file_path)", lambda: getattr(bind, "load_module")(tmp_path) if hasattr(bind, "load_module") else None),
-            ("bind.load(file_path)", lambda: getattr(bind, "load")(tmp_path) if hasattr(bind, "load") else None),
-            ("bind.open_module(file_path)", lambda: getattr(bind, "open_module")(tmp_path) if hasattr(bind, "open_module") else None),
-            ("bind.Module(tmp_path)", lambda: getattr(bind, "Module")(tmp_path) if hasattr(bind, "Module") else None),
-        ]
-        for desc, fn in file_candidates:
-            ok, tb, val = _safe_call(desc, fn)
-            record(desc, ok, tb)
-            if ok and val is not None:
-                raw = val
-                break
-    except Exception as e:
-        attempts.append(("file-path attempt", traceback.format_exc()))
-    finally:
-        # keep the temp file for debugging if no success (do not delete here if raw is None)
-        if raw is None and tmp_path and os.path.exists(tmp_path):
-            # leave file for user to inspect; caller/diagnostic will report its path
-            attempts.append(("tempfile_left_for_debug", tmp_path))
-        else:
-            if tmp_path and os.path.exists(tmp_path):
+    # 2) bind.load / bind.load_module / bind.open (bytes, BytesIO)
+    for name in ("load", "load_module", "open", "open_module", "from_bytes"):
+        if hasattr(bind, name):
+            # try BytesIO
+            try:
+                b = io.BytesIO(data)
+                ok, tb, val = _safe_call(lambda name=name, b=b: getattr(bind, name)(b))
+                record(f"bind.{name}(BytesIO)", ok, tb)
+                if ok and val is not None:
+                    return val, attempts
+            except Exception:
+                record(f"bind.{name}(BytesIO)-exc", False, traceback.format_exc())
+            # try writing to a temp file and passing path
+            try:
+                fd, tmp = tempfile.mkstemp(suffix=".mod")
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+                ok, tb, val = _safe_call(lambda name=name, tmp=tmp: getattr(bind, name)(tmp))
+                record(f"bind.{name}(tmpfile)", ok, tb)
+                if ok and val is not None:
+                    return val, attempts
+            except Exception:
+                record(f"bind.{name}(tmpfile)-exc", False, traceback.format_exc())
+            finally:
                 try:
-                    os.remove(tmp_path)
+                    if 'tmp' in locals() and os.path.exists(tmp):
+                        os.remove(tmp)
                 except Exception:
                     pass
+
+    # 3) bind.Module.from_bytes / from_buffer if exists
+    if hasattr(bind, "Module"):
+        M = getattr(bind, "Module")
+        for meth in ("from_bytes", "from_buffer", "load"):
+            if hasattr(M, meth):
+                ok, tb, val = _safe_call(lambda meth=meth: getattr(M, meth)(data))
+                record(f"bind.Module.{meth}(data)", ok, tb)
+                if ok and val is not None:
+                    return val, attempts
 
     return raw, attempts
 
 def _wrap_module(raw_mod) -> Any:
     """
-    Wrap the raw module object into a simple ModuleWrapper with:
-     - title
-     - num_channels
-     - sample_names()
-     - order_list()
-     - num_patterns()
-     - pattern_rows(idx)
-    The wrapper tries multiple attribute/method names defensively.
+    Wrap the raw binding module into ModuleWrapper with a stable minimal API.
     """
     class ModuleWrapper:
         def __init__(self, raw):
@@ -218,8 +172,8 @@ def _wrap_module(raw_mod) -> Any:
             try:
                 s = getattr(self._raw, "samples", None)
                 if s:
-                    for i, e in enumerate(s, start=1):
-                        nm = getattr(e, "name", None) or getattr(e, "sample_name", None)
+                    for i, entry in enumerate(s, start=1):
+                        nm = getattr(entry, "name", None) or getattr(entry, "sample_name", None)
                         names.append(str(nm) if nm else f"sample{i}")
                     return names
             except Exception:
@@ -245,7 +199,7 @@ def _wrap_module(raw_mod) -> Any:
                 if hasattr(self._raw, "get_pattern"):
                     patt = self._raw.get_pattern(idx)
                     if patt:
-                        for a in ("rows", "data", "pattern"):
+                        for a in ("rows","data","pattern"):
                             if hasattr(patt, a):
                                 val = getattr(patt, a)
                                 try:
@@ -255,7 +209,7 @@ def _wrap_module(raw_mod) -> Any:
                 pl = getattr(self._raw, "patterns", None)
                 if pl and idx < len(pl):
                     p = pl[idx]
-                    for a in ("rows", "data"):
+                    for a in ("rows","data"):
                         if hasattr(p, a):
                             val = getattr(p, a)
                             try:
@@ -271,34 +225,33 @@ def _wrap_module(raw_mod) -> Any:
 
 def dump_binding_info() -> str:
     if _binding is None:
-        return "No binding loaded."
+        return "No module-tracker binding detected."
     try:
         attrs = _list_attrs(_binding)
-        return f"Binding: {_binding_name}\nTop-level attributes (sample): {', '.join(attrs[:50])}{'...' if len(attrs)>50 else ''}"
+        return f"Binding: {_binding_name}\nTop-level attrs (sample): {', '.join(attrs[:80])}{'...' if len(attrs)>80 else ''}"
     except Exception as e:
         return f"Binding: {_binding_name}\nError listing attrs: {e}"
 
 def run_diagnostics(data: Optional[bytes] = None) -> str:
     """
-    Run constructor attempts and return a detailed diagnostic string.
-    If 'data' is provided, it will attempt constructors using that data; otherwise only binding info is shown.
+    Run diagnostic constructors and return a report string. If 'data' is provided,
+    attempts to create a module using that bytes payload.
     """
     lines = []
     if _binding is None:
-        lines.append("No known OpenMPT binding found in this environment.")
-        lines.append("Tried candidates: " + ", ".join(_BINDING_CANDIDATES))
+        lines.append("No supported 'module-tracker' binding present in environment.")
+        lines.append("Attempted import names: " + ", ".join(_BINDING_CANDIDATES))
         return "\n".join(lines)
 
     lines.append(f"Detected binding: {_binding_name}")
-    lines.append("Top-level attributes (sample):")
     try:
         attrs = _list_attrs(_binding)
-        lines.append(", ".join(attrs[:200]) + ("..." if len(attrs) > 200 else ""))
+        lines.append("Top-level attrs (partial): " + ", ".join(attrs[:200]) + ("..." if len(attrs) > 200 else ""))
     except Exception as e:
-        lines.append(f"Error listing attributes: {e}")
+        lines.append(f"Error listing binding attributes: {e}")
 
     if data is None:
-        lines.append("\nNo data supplied to constructor diagnostics. To run full diagnostics, call run_diagnostics(data) with module bytes.")
+        lines.append("\nNo module bytes supplied. Provide module bytes to run constructor diagnostics.")
         return "\n".join(lines)
 
     raw, attempts = _attempt_with_bytes(_binding, data)
@@ -307,45 +260,39 @@ def run_diagnostics(data: Optional[bytes] = None) -> str:
         lines.append(f"- {desc}: {res}")
     if raw is None:
         lines.append("\nResult: FAILED to construct module object with attempted patterns.")
-        lines.append("If possible, provide the output of this diagnostic and a small sample module file for me to adapt the adapter.")
     else:
-        lines.append("\nResult: SUCCESS (constructed a raw module object). Attempting to wrap...")
+        lines.append("\nResult: SUCCESS (constructed raw module) — attempting wrapper introspection...")
         try:
             wrapped = _wrap_module(raw)
-            # call a few introspection methods (safe)
+            lines.append(f"Wrapped title: {wrapped.title}")
+            lines.append(f"Wrapped num_channels: {wrapped.num_channels}")
             try:
-                lines.append(f"Wrapped title: {wrapped.title}")
-            except Exception:
-                lines.append("Wrapped title: <error>")
-            try:
-                lines.append(f"Wrapped num_channels: {wrapped.num_channels}")
-            except Exception:
-                lines.append("Wrapped num_channels: <error>")
-            try:
-                names = wrapped.sample_names()
-                lines.append(f"Wrapped sample_names (count {len(names)}): {names[:20]}")
+                sn = wrapped.sample_names()
+                lines.append(f"Wrapped sample_names (count {len(sn)}): {sn[:20]}")
             except Exception:
                 lines.append("Wrapped sample_names: <error>")
         except Exception as e:
-            lines.append(f"Wrapping failed: {e}")
-            lines.append("Binding info dump:")
-            lines.append(dump_binding_info())
+            lines.append(f"Wrap failed: {e}")
+            lines.append("Binding info:\n" + dump_binding_info())
+
     return "\n".join(lines)
 
 def load_module_from_bytes(data: bytes):
     """
-    Public loader: returns a ModuleWrapper or raises RuntimeError with diagnostics.
+    Construct and return a ModuleWrapper or raise RuntimeError with diagnostics.
     """
     if _binding is None:
-        raise ImportError("No OpenMPT binding detected. Install 'pyopenmpt' or 'omp4py' in the active environment.")
+        raise ImportError("No module-tracker binding found. Install the package 'module-tracker' (importable as module_tracker or moduletracker) in this environment.")
+
     raw, attempts = _attempt_with_bytes(_binding, data)
     if raw is None:
-        lines = ["Failed to construct module with tried constructors:"]
+        lines = ["Failed to construct module object. Attempts:"]
         for desc, res in attempts:
             lines.append(f"- {desc}: {res}")
         lines.append("Binding info:")
         lines.append(dump_binding_info())
         raise RuntimeError("\n".join(lines))
+
     try:
         wrapped = _wrap_module(raw)
         return wrapped

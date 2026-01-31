@@ -6,8 +6,6 @@ numpy>=1.24
 soundfile>=0.12.1
 imageio-ffmpeg>=0.4.7
 tqdm>=4.65
-# Optional:
-# pyopenmpt
-# omp4py
-# opencv-python
-# numba
+# Optional binding for binary tracker modules:
+# pip install module-tracker
+# (removed previous optional bindings: omp4py, pyopenmpt, openmpt, libopenmpt, pymodopenmpt)

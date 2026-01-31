@@ -1,7 +1,7 @@
 [project]
 name = "modpmv"
 version = "0.4.0-deluxe"
-description = "ModPMV V4 Deluxe — YTPMV generation with OpenMPT, plugin pipeline and ffmpeg rendering"
+description = "ModPMV V4 Deluxe — YTPMV generation with module-tracker adapter, plugin pipeline and ffmpeg rendering"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{name="ModPMV Contributors"}]
@@ -18,5 +18,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-openmpt = ["pyopenmpt", "omp4py"]
+# new optional binding package (module-tracker). Replace with actual package name you use.
+openmpt = ["module-tracker"]
 extras = ["opencv-python", "numba"]
