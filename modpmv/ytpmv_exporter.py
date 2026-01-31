@@ -1,5 +1,5 @@
 """
-YTPMV exporter V3: copy audio/video and only truly used video sample files, write manifest with timeline mapping.
+YTPMV exporter V4 Deluxe: copies used assets and writes a timestamped manifest mapping clip segment usage.
 """
 import os, shutil, json
 from typing import List, Dict, Any
@@ -16,9 +16,8 @@ def export_ytpmv_package(module_data: Dict[str, Any],
     dest_video = os.path.join(out_folder, os.path.basename(video_path))
     shutil.copy2(audio_path, dest_audio)
     shutil.copy2(video_path, dest_video)
-    clips_dir = os.path.join(out_folder, "video_clips")
-    ensure_dir(clips_dir)
-    copied = []
+    clips_dir = os.path.join(out_folder, "video_clips"); ensure_dir(clips_dir)
+    copied=[]
     for vf in (used_video_files or []):
         if os.path.exists(vf):
             dst = os.path.join(clips_dir, os.path.basename(vf))

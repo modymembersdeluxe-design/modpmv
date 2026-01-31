@@ -1,1 +1,3 @@
-__version__ = "0.2.0"
+"""ModPMV package — V4"""
+__version__ = "0.4.0"
+__author__ = "ModPMV Contributors"

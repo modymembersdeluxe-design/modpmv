@@ -1,24 +1,20 @@
-"""
-Simple file-based cache for rendered previews and intermediate audio files.
-Cache keys are stable hashes of job parameters so preview runs reuse previous work.
-"""
-import os
+"""File-based cache for previews, intermediates and job artifacts."""
+import os, shutil
 from typing import Optional
 from .utils import stable_hash, ensure_dir
 
-CACHE_DIR = os.path.join(".modpmv_cache")
+CACHE_ROOT = ".modpmv_cache"
 
-def cached_path_for_job(job_id: str, filename: str) -> str:
-    ensure_dir(CACHE_DIR)
-    key = stable_hash(job_id)
-    d = os.path.join(CACHE_DIR, key)
+def path_for(key: str, filename: str) -> str:
+    ensure_dir(CACHE_ROOT)
+    k = stable_hash(key)
+    d = os.path.join(CACHE_ROOT, k)
     ensure_dir(d)
     return os.path.join(d, filename)
 
-def exists_cached(job_id: str, filename: str) -> bool:
-    return os.path.exists(cached_path_for_job(job_id, filename))
+def has(key: str, filename: str) -> bool:
+    return os.path.exists(path_for(key, filename))
 
-def clear_cache():
-    import shutil
-    if os.path.isdir(CACHE_DIR):
-        shutil.rmtree(CACHE_DIR)
+def clear():
+    if os.path.isdir(CACHE_ROOT):
+        shutil.rmtree(CACHE_ROOT)

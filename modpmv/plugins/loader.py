@@ -1,20 +1,15 @@
 """
-Plugin discovery & manifest (V3):
-- discover_plugins(plugin_folder) -> {"audio": {...}, "visual": {...}}
-- list_plugins_manifest(plugin_folder) -> list of metadata dicts (name,type,description,tags,class)
-Supports:
-- entry points (modpmv.plugins.audio / modpmv.plugins.visual)
-- local plugins folder (plugins/audio, plugins/visual)
-- examples/plugins used by default in GUI
+Plugin discovery & manifest for ModPMV Deluxe. Supports:
+- setuptools entry points
+- local plugins/ folder (audio/, visual/) and examples/plugins
+- Marketplace metadata (license, deps)
 """
-import os
-import sys
-import importlib.util
+import os, sys, importlib.util
 from importlib.metadata import entry_points
 from typing import Dict, Any, List, Optional
 from .base import AudioPlugin, VisualPlugin
 
-def _load_from_entry_points(group: str) -> Dict[str, Any]:
+def _from_entry_points(group: str) -> Dict[str, Any]:
     found = {}
     try:
         eps = entry_points()
@@ -30,64 +25,63 @@ def _load_from_entry_points(group: str) -> Dict[str, Any]:
         pass
     return found
 
-def _load_from_folder(folder: str) -> Dict[str, Any]:
+def _from_folder(folder: str) -> Dict[str, Any]:
     plugins = {}
     if not os.path.isdir(folder):
         return plugins
     sys.path.insert(0, folder)
-    for fname in os.listdir(folder):
-        if not fname.endswith(".py") or fname.startswith("_"):
-            continue
-        path = os.path.join(folder, fname)
-        name = os.path.splitext(fname)[0]
+    for fn in os.listdir(folder):
+        if not fn.endswith(".py") or fn.startswith("_"): continue
+        path=os.path.join(folder, fn)
+        modname=os.path.splitext(fn)[0]
         try:
-            spec = importlib.util.spec_from_file_location(name, path)
-            mod = importlib.util.module_from_spec(spec)
+            spec=importlib.util.spec_from_file_location(modname, path)
+            mod=importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)  # type: ignore
             for attr in dir(mod):
-                obj = getattr(mod, attr)
+                obj=getattr(mod, attr)
                 try:
                     if isinstance(obj, type) and issubclass(obj, (AudioPlugin, VisualPlugin)) and obj not in (AudioPlugin, VisualPlugin):
-                        plugins[getattr(obj, "name", f"{name}.{attr}")] = obj
+                        plugins[getattr(obj, "name", f"{modname}.{attr}")] = obj
                 except Exception:
                     continue
         except Exception:
             continue
-    try:
-        sys.path.pop(0)
-    except Exception:
-        pass
+    try: sys.path.pop(0)
+    except Exception: pass
     return plugins
 
 def discover_plugins(plugin_folder: Optional[str] = "plugins") -> Dict[str, Dict[str, Any]]:
-    audio = {}
-    visual = {}
-    audio.update(_load_from_entry_points("modpmv.plugins.audio"))
-    visual.update(_load_from_entry_points("modpmv.plugins.visual"))
+    audio={}; visual={}
+    audio.update(_from_entry_points("modpmv.plugins.audio"))
+    visual.update(_from_entry_points("modpmv.plugins.visual"))
     if plugin_folder:
-        audio.update(_load_from_folder(os.path.join(plugin_folder, "audio")))
-        visual.update(_load_from_folder(os.path.join(plugin_folder, "visual")))
-        # flat fallback
-        audio.update(_load_from_folder(plugin_folder))
-        visual.update(_load_from_folder(plugin_folder))
-    return {"audio": audio, "visual": visual}
+        audio.update(_from_folder(os.path.join(plugin_folder,"audio")))
+        visual.update(_from_folder(os.path.join(plugin_folder,"visual")))
+        audio.update(_from_folder(plugin_folder))
+        visual.update(_from_folder(plugin_folder))
+    # include shipped examples by default
+    audio.update(_from_folder(os.path.join("examples","plugins")))
+    visual.update(_from_folder(os.path.join("examples","plugins")))
+    return {"audio":audio,"visual":visual}
 
 def list_plugins_manifest(plugin_folder: Optional[str] = "plugins") -> List[Dict[str, Any]]:
     discovered = discover_plugins(plugin_folder)
-    manifest = []
+    manifest=[]
     for ptype in ("audio","visual"):
         for name, cls in discovered.get(ptype, {}).items():
             try:
-                meta = {
+                manifest.append({
                     "name": getattr(cls, "name", name),
                     "type": ptype,
-                    "description": getattr(cls, "description", "") or "",
+                    "description": getattr(cls, "description","") or "",
                     "tags": getattr(cls, "tags", []) or [],
-                    "version": getattr(cls, "version", "0.0.1"),
+                    "version": getattr(cls, "version","0.0.1"),
+                    "license": getattr(cls, "license",""),
+                    "deps": getattr(cls, "deps", []),
                     "class": cls
-                }
-                manifest.append(meta)
+                })
             except Exception:
                 continue
-    manifest.sort(key=lambda m: (m["type"], m["name"]))
+    manifest.sort(key=lambda m:(m["type"], m["name"]))
     return manifest

@@ -1,19 +1,15 @@
 """
-Audio renderer V3:
-- render_audio_from_module_data: map pattern rows to audio timeline
-- apply_audio_plugins: chain audio plugins (AudioEffectPlugin)
-- caching of intermediate audio exports for preview reuse
+Audio renderer V4 Deluxe — mapping patterns -> pydub timeline, plugin chain, caching.
 """
 from pydub import AudioSegment
 from typing import List, Optional, Dict, Any
 import os
 from .assets import find_audio_for_sample
-from .cache import cached_path_for_job, exists_cached
 from .utils import ensure_dir
 
 DEFAULT_ROW_MS = 250
 
-def _load_audio_file(path: str) -> AudioSegment:
+def _load_audio(path: str) -> AudioSegment:
     return AudioSegment.from_file(path)
 
 def render_audio_from_module_data(module_data: Dict[str, Any],
@@ -22,37 +18,29 @@ def render_audio_from_module_data(module_data: Dict[str, Any],
     out = AudioSegment.silent(duration=0)
     patterns = module_data.get("patterns", [])
     order = module_data.get("order", list(range(len(patterns))))
-    channels = module_data.get("channels", 32)
-    for patt_idx in order:
-        if patt_idx < 0 or patt_idx >= len(patterns):
-            continue
-        pattern = patterns[patt_idx]
-        for row in pattern:
-            segments = []
+    channels = int(module_data.get("channels", 32))
+    for idx in order:
+        if idx < 0 or idx >= len(patterns): continue
+        patt = patterns[idx]
+        for row in patt:
+            segments=[]
             for tok in row[:channels]:
                 if isinstance(tok, str) and tok.upper().startswith("SAMPLE:"):
                     name = tok.split(":",1)[1]
-                    # Try explicit file first
-                    file_path = None
-                    sdecl = module_data.get("samples", {}).get(name)
-                    if sdecl and sdecl.get("file"):
-                        file_path = sdecl.get("file")
+                    sdecl = module_data.get("samples",{}).get(name)
+                    file_path = sdecl.get("file") if sdecl else None
                     if not file_path:
                         file_path = find_audio_for_sample(name, audio_asset_folders)
                     if file_path and os.path.exists(file_path):
-                        seg = _load_audio_file(file_path)
-                        # normalize to row length
-                        if len(seg) > row_duration_ms:
-                            seg = seg[:row_duration_ms]
-                        elif len(seg) < row_duration_ms and len(seg) > 0:
+                        seg = _load_audio(file_path)
+                        if len(seg) > row_duration_ms: seg = seg[:row_duration_ms]
+                        elif len(seg) < row_duration_ms and len(seg)>0:
                             seg = seg * (row_duration_ms // len(seg)) + seg[:(row_duration_ms % len(seg))]
                         segments.append(seg)
                     else:
                         segments.append(AudioSegment.silent(duration=row_duration_ms))
                 else:
-                    # REST or unknown
                     segments.append(AudioSegment.silent(duration=row_duration_ms))
-            # mix channel segments
             if segments:
                 mixed = segments[0]
                 for s in segments[1:]:
