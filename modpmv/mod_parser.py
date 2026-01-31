@@ -1,14 +1,20 @@
 """
-Parsing dispatcher (V3):
-- Accepts: .it, .xm, .mod using OpenMPT adapter when available
-- Fallback to text .mod parser (simple human-readable format)
-- Normalizes output into a `module_data` dict consumed by renderers
+Parsing dispatcher that supports text modules and binary tracker modules via OpenMPT adapter (including OMP4Py).
+
+parse(path) returns normalized module_data:
+{
+  "title": str,
+  "samples": { name: {"file": Optional[path], ...} },
+  "patterns": [ pattern ],  # pattern -> list of rows -> list of channel tokens (strings or raw)
+  "order": [int],
+  "channels": int,
+  "duration_hint": Optional[float]
+}
 """
 from typing import Dict, Any, List
 import os
 
 def _parse_text_mod(path: str) -> Dict[str, Any]:
-    # Minimal text parser preserved from previous versions
     title = "Untitled"
     samples = {}
     patterns = []
@@ -55,7 +61,6 @@ def _parse_text_mod(path: str) -> Dict[str, Any]:
     if cur_pattern:
         patterns.append(cur_pattern)
 
-    # normalize to 32 channels (max) for the text fallback
     channels = 32
     norm_patterns = []
     for patt in patterns:
@@ -81,25 +86,31 @@ def _parse_text_mod(path: str) -> Dict[str, Any]:
 def parse(path: str) -> Dict[str, Any]:
     ext = os.path.splitext(path)[1].lower()
     if ext in (".it", ".xm", ".mod"):
-        # attempt OpenMPT via adapter
+        # try OpenMPT adapter (supports pyopenmpt, omp4py, etc.)
         try:
             from .openmpt_adapter import load_module_from_bytes
-        except Exception:
-            # No adapter available: fall back to text mod only if file is text; otherwise raise ImportError
-            raise ImportError("No OpenMPT adapter available. Install a binding (e.g. pyopenmpt) to parse binary tracker modules.")
-        # read bytes and attempt to create wrapper
+        except Exception as e:
+            # adapter not installed: raise a helpful error
+            raise ImportError(
+                "OpenMPT adapter not available. To parse binary tracker modules (.it/.xm/.mod) "
+                "install a binding such as 'pyopenmpt' or 'omp4py' and ensure the binding is importable. "
+                f"Adapter import error: {e}"
+            )
+        # read module bytes and build normalized data
         with open(path, "rb") as fh:
             data = fh.read()
         modwrap = load_module_from_bytes(data)
-        title = getattr(modwrap, "title", os.path.splitext(os.path.basename(path))[0])
+        title = getattr(modwrap, "title", os.path.splitext(os.path.basename(path))[0]) or os.path.splitext(os.path.basename(path))[0]
         channels = getattr(modwrap, "num_channels", 32) or 32
         channels = max(1, min(32, int(channels)))
+        # samples
         samples = {}
         try:
             for s in modwrap.sample_names():
                 samples[s] = {"file": None}
         except Exception:
             samples = {}
+        # patterns
         patterns = []
         try:
             npatt = modwrap.num_patterns()
@@ -108,7 +119,7 @@ def parse(path: str) -> Dict[str, Any]:
                 # normalize rows to channel count
                 norm_rows = []
                 for r in rows:
-                    rr = r[:]
+                    rr = list(r) if isinstance(r, (list, tuple)) else [r]
                     if len(rr) < channels:
                         rr += ["REST"] * (channels - len(rr))
                     else:
@@ -117,7 +128,11 @@ def parse(path: str) -> Dict[str, Any]:
                 patterns.append(norm_rows)
         except Exception:
             patterns = [[["REST"]*channels for _ in range(4)]]
-        order = modwrap.order_list() or list(range(len(patterns)))
+        order = []
+        try:
+            order = modwrap.order_list() or list(range(len(patterns)))
+        except Exception:
+            order = list(range(len(patterns)))
         return {
             "title": title,
             "samples": samples,
