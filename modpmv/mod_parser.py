@@ -1,10 +1,10 @@
 """
-Module parser: use module-tracker adapter when available but fall back to text parser on any error.
-The parser will not raise on binding import/construction failures; it logs diagnostics and
-returns a text-mode parse result so workflows keep running.
+Module parser V5 — uses module-tracker adapter if installed, otherwise falls back to text parser.
+On adapter failures, parser will write a diagnostic file under output/ and return a safe text-parsed result.
 """
 import os
 from typing import Dict, Any
+from .utils import ensure_dir, now_iso
 
 def _parse_text(path: str) -> Dict[str, Any]:
     title = "Untitled"
@@ -33,12 +33,13 @@ def _parse_text(path: str) -> Dict[str, Any]:
                 samples[name] = {"file": file}
                 continue
             if u.startswith("PATTERN:"):
-                section = "pattern"
-                if cur: patterns.append(cur); cur=[]
+                section="pattern"
+                if cur:
+                    patterns.append(cur); cur=[]
                 continue
             if u.startswith("ORDER:"):
                 order = [int(x) for x in ln.split(":",1)[1].split(",") if x.strip().isdigit()]; section=None; continue
-            if section == "pattern":
+            if section=="pattern":
                 tokens=[]
                 for tok in ln.replace(",", " ").split():
                     tokens.append(tok.strip())
@@ -46,7 +47,7 @@ def _parse_text(path: str) -> Dict[str, Any]:
                     cur.append(tokens)
     if cur:
         patterns.append(cur)
-    channels=32
+    channels = 32
     norm=[]
     for patt in patterns:
         pn=[]
@@ -63,67 +64,60 @@ def _parse_text(path: str) -> Dict[str, Any]:
 def parse(path: str) -> Dict[str, Any]:
     ext = os.path.splitext(path)[1].lower()
     if ext in (".it", ".xm", ".mod"):
-        # try adapter, but fall back safely to text parser on any problem
         try:
             from .openmpt_adapter import load_module_from_bytes, run_diagnostics
-            with open(path, "rb") as fh:
-                data = fh.read()
-            try:
-                modwrap = load_module_from_bytes(data)
-            except Exception as e:
-                # collect diagnostic if available, but don't re-raise — fallback to text parsing
-                diag = ""
-                try:
-                    diag = run_diagnostics(data)
-                except Exception:
-                    diag = str(e)
-                # write diagnostic to a file in output for inspection
-                try:
-                    import pathlib, datetime
-                    outdir = pathlib.Path("output")
-                    outdir.mkdir(exist_ok=True)
-                    fname = outdir / f"openmpt_diagnostic_{datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.txt"
-                    fname.write_text(diag, encoding="utf-8")
-                except Exception:
-                    pass
-                # fallback to text parser so parse() does not raise
-                return _parse_text(path)
-            # normalize wrapper into module_data
-            title = getattr(modwrap, "title", os.path.splitext(os.path.basename(path))[0]) or os.path.splitext(os.path.basename(path))[0]
-            channels = getattr(modwrap, "num_channels", 32) or 32
-            channels = max(1, min(32, int(channels)))
-            samples = {}
-            try:
-                for s in modwrap.sample_names():
-                    samples[s] = {"file": None}
-            except Exception:
-                samples = {}
-            patterns = []
-            try:
-                npat = modwrap.num_patterns()
-                for p in range(npat):
-                    rows = modwrap.pattern_rows(p)
-                    norm_rows = []
-                    for r in rows:
-                        rr = list(r) if isinstance(r, (list, tuple)) else [r]
-                        if len(rr) < channels:
-                            rr += ["REST"] * (channels - len(rr))
-                        else:
-                            rr = rr[:channels]
-                        norm_rows.append(rr)
-                    patterns.append(norm_rows)
-            except Exception:
-                patterns = [[["REST"] * channels for _ in range(4)]]
-            try:
-                order = modwrap.order_list() or list(range(len(patterns)))
-            except Exception:
-                order = list(range(len(patterns)))
-            return {"title": title, "samples": samples, "patterns": patterns, "order": order, "channels": channels, "duration_hint": None}
-        except ImportError:
-            # adapter not available — fallback to text parser silently
-            return _parse_text(path)
         except Exception:
-            # any other unexpected error — fallback to text parser
+            # adapter not installed — fallback to text parsing
             return _parse_text(path)
+        with open(path, "rb") as fh:
+            data = fh.read()
+        try:
+            modwrap = load_module_from_bytes(data)
+        except Exception as e:
+            # write diagnostic and fallback to text parser
+            try:
+                diag = run_diagnostics(data)
+            except Exception:
+                diag = str(e)
+            try:
+                outdir = os.path.join("output")
+                ensure_dir(outdir)
+                fname = os.path.join(outdir, f"adapter_diag_{now_iso()}.txt")
+                with open(fname, "w", encoding="utf-8") as fh:
+                    fh.write(diag)
+            except Exception:
+                pass
+            return _parse_text(path)
+        # normalize wrapper
+        title = getattr(modwrap, "title", os.path.splitext(os.path.basename(path))[0]) or os.path.splitext(os.path.basename(path))[0]
+        channels = getattr(modwrap, "num_channels", 32) or 32
+        channels = max(1, min(32, int(channels)))
+        samples = {}
+        try:
+            for s in modwrap.sample_names():
+                samples[s] = {"file": None}
+        except Exception:
+            samples = {}
+        patterns = []
+        try:
+            npat = modwrap.num_patterns()
+            for p in range(npat):
+                rows = modwrap.pattern_rows(p)
+                norm_rows = []
+                for r in rows:
+                    rr = list(r) if isinstance(r, (list, tuple)) else [r]
+                    if len(rr) < channels:
+                        rr += ["REST"] * (channels - len(rr))
+                    else:
+                        rr = rr[:channels]
+                    norm_rows.append(rr)
+                patterns.append(norm_rows)
+        except Exception:
+            patterns = [[["REST"] * channels for _ in range(4)]]
+        try:
+            order = modwrap.order_list() or list(range(len(patterns)))
+        except Exception:
+            order = list(range(len(patterns)))
+        return {"title": title, "samples": samples, "patterns": patterns, "order": order, "channels": channels, "duration_hint": None}
     else:
         return _parse_text(path)

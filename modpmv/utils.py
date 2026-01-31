@@ -1,5 +1,8 @@
-"""Utility helpers for ModPMV Deluxe."""
-import os, json, hashlib, time
+"""Utility helpers used across ModPMV V5."""
+import os
+import json
+import hashlib
+import time
 from typing import Any
 
 def ensure_dir(path: str):
@@ -19,5 +22,5 @@ def write_json(path: str, data: Any):
 def stable_hash(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
-def now_ts() -> float:
-    return time.time()
+def now_iso() -> str:
+    return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())

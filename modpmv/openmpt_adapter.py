@@ -1,21 +1,21 @@
 """
-Module-Tracker Adapter — tolerant diagnostics (safe to call from parser).
+Module-Tracker Adapter (V5) — targeted to a single binding name with diagnostics.
 
-This adapter still tries to build a ModuleWrapper for a binding named
-'module_tracker' or 'moduletracker' if one is installed, and exposes:
-
+This adapter expects a binding importable as 'module_tracker' or 'moduletracker'.
+It tries binding-specific constructors and generic patterns, and provides:
 - load_module_from_bytes(data: bytes) -> ModuleWrapper
 - run_diagnostics(data: Optional[bytes]) -> str
 
-Note: load_module_from_bytes may still raise on unrecoverable errors;
-the parser wraps calls and falls back safely. run_diagnostics returns a
-copy-pastable diagnostic string you can use for debugging.
+The ModuleWrapper exposes:
+- title
+- num_channels
+- sample_names()
+- order_list()
+- num_patterns()
+- pattern_rows(idx)
 """
 from typing import Any, List, Tuple, Optional
-import traceback
-import io
-import os
-import tempfile
+import traceback, io, os, tempfile
 
 _BINDING_CANDIDATES = ("module_tracker", "moduletracker")
 
@@ -48,64 +48,48 @@ def _attempt_with_bytes(bind, data: bytes):
     raw = None
     def rec(desc, ok, tb):
         attempts.append((desc, "OK" if ok and tb is None else (tb.splitlines()[0] if tb else "OK(None)")))
-    # Try a few patterns (binding-specific then generic)
-    if hasattr(bind, "tracker") and callable(getattr(bind, "tracker")):
-        ok, tb, val = _safe_call(lambda: getattr(bind, "tracker")(data))
-        rec("bind.tracker(data)", ok, tb)
-        if ok and val is not None:
-            return val, attempts
-        try:
-            b = io.BytesIO(data)
-            ok, tb, val = _safe_call(lambda: getattr(bind, "tracker")(b))
-            rec("bind.tracker(BytesIO)", ok, tb)
+    # binding-specific heuristics
+    for name in ("tracker", "analyzer", "track_glob"):
+        if hasattr(bind, name) and callable(getattr(bind, name)):
+            # try bytes
+            ok, tb, val = _safe_call(lambda name=name: getattr(bind, name)(data))
+            rec(f"bind.{name}(data)", ok, tb)
             if ok and val is not None:
                 return val, attempts
-        except Exception:
-            rec("bind.tracker(BytesIO)-exc", False, traceback.format_exc())
-        # try tempfile path
-        try:
-            fd, tmp = tempfile.mkstemp(suffix=".mod")
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(data)
-            ok, tb, val = _safe_call(lambda: getattr(bind, "tracker")(tmp))
-            rec("bind.tracker(tmpfile)", ok, tb)
-            if ok and val is not None:
-                return val, attempts
-        except Exception:
-            rec("bind.tracker(tmpfile)-exc", False, traceback.format_exc())
-        finally:
+            # try BytesIO
             try:
-                if 'tmp' in locals() and os.path.exists(tmp):
-                    os.remove(tmp)
+                b = io.BytesIO(data)
+                ok, tb, val = _safe_call(lambda name=name, b=b: getattr(bind, name)(b))
+                rec(f"bind.{name}(BytesIO)", ok, tb)
+                if ok and val is not None:
+                    return val, attempts
             except Exception:
-                pass
-
-    # try analyzer if present
-    if hasattr(bind, "analyzer") and callable(getattr(bind, "analyzer")):
-        ok, tb, val = _safe_call(lambda: getattr(bind, "analyzer")(data))
-        rec("bind.analyzer(data)", ok, tb)
-        if ok and val is not None:
-            return val, attempts
-        try:
-            b = io.BytesIO(data)
-            ok, tb, val = _safe_call(lambda: getattr(bind, "analyzer")(b))
-            rec("bind.analyzer(BytesIO)", ok, tb)
-            if ok and val is not None:
-                return val, attempts
-        except Exception:
-            rec("bind.analyzer(BytesIO)-exc", False, traceback.format_exc())
-
+                rec(f"bind.{name}(BytesIO)-exc", False, traceback.format_exc())
+            # try path
+            try:
+                fd, tmp = tempfile.mkstemp(suffix=".mod")
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(data)
+                ok, tb, val = _safe_call(lambda name=name, tmp=tmp: getattr(bind, name)(tmp))
+                rec(f"bind.{name}(tmpfile)", ok, tb)
+                if ok and val is not None:
+                    return val, attempts
+            except Exception:
+                rec(f"bind.{name}(tmpfile)-exc", False, traceback.format_exc())
+            finally:
+                try:
+                    if 'tmp' in locals() and os.path.exists(tmp):
+                        os.remove(tmp)
+                except Exception:
+                    pass
     # generic attempts
     for name in ("Module", "load", "load_module", "open", "open_module", "from_bytes"):
         if hasattr(bind, name):
             # try bytes
-            try:
-                ok, tb, val = _safe_call(lambda name=name: getattr(bind, name)(data))
-                rec(f"bind.{name}(data)", ok, tb)
-                if ok and val is not None:
-                    return val, attempts
-            except Exception:
-                rec(f"bind.{name}(data)-exc", False, traceback.format_exc())
+            ok, tb, val = _safe_call(lambda name=name: getattr(bind, name)(data))
+            rec(f"bind.{name}(data)", ok, tb)
+            if ok and val is not None:
+                return val, attempts
             # try BytesIO
             try:
                 b = io.BytesIO(data)
@@ -132,10 +116,9 @@ def _attempt_with_bytes(bind, data: bytes):
                         os.remove(tmp)
                 except Exception:
                     pass
-
     return None, attempts
 
-def _wrap_module(raw_mod):
+def _wrap_module(raw_mod) -> Any:
     class ModuleWrapper:
         def __init__(self, raw):
             self._raw = raw
@@ -149,18 +132,18 @@ def _wrap_module(raw_mod):
                     continue
             return None
         @property
-        def title(self):
-            v = self._try(("title","song_name","get_title","get_song_name","name"))
+        def title(self) -> str:
+            v = self._try(("title", "song_name", "get_title", "get_song_name", "name"))
             return str(v) if v is not None else ""
         @property
-        def num_channels(self):
-            v = self._try(("get_num_channels","num_channels","channels","get_channels"))
+        def num_channels(self) -> int:
+            v = self._try(("get_num_channels", "num_channels", "channels", "get_channels"))
             try:
                 return int(v) if v is not None else 0
             except Exception:
                 return 0
-        def sample_names(self):
-            names=[]
+        def sample_names(self) -> List[str]:
+            names = []
             try:
                 if hasattr(self._raw, "get_num_samples") and callable(getattr(self._raw, "get_num_samples")):
                     n = int(self._raw.get_num_samples())
@@ -186,7 +169,7 @@ def _wrap_module(raw_mod):
             try:
                 s = getattr(self._raw, "samples", None)
                 if s:
-                    for i,e in enumerate(s, start=1):
+                    for i, e in enumerate(s, start=1):
                         nm = getattr(e, "name", None) or getattr(e, "sample_name", None)
                         names.append(str(nm) if nm else f"sample{i}")
                     return names
@@ -194,23 +177,23 @@ def _wrap_module(raw_mod):
                 pass
             return names
         def order_list(self):
-            v = self._try(("get_order_list","order_list","order","get_order"))
+            v = self._try(("get_order_list", "order_list", "order", "get_order"))
             try:
                 return list(v) if v is not None else []
             except Exception:
                 return []
         def num_patterns(self):
-            v = self._try(("get_num_patterns","num_patterns","patterns_count"))
+            v = self._try(("get_num_patterns", "num_patterns", "patterns_count"))
             try:
                 return int(v) if v is not None else 0
             except Exception:
                 return 0
-        def pattern_rows(self, idx):
+        def pattern_rows(self, idx: int) -> List[List[Any]]:
             try:
                 if hasattr(self._raw, "get_pattern"):
                     patt = self._raw.get_pattern(idx)
                     if patt:
-                        for a in ("rows","data","pattern"):
+                        for a in ("rows", "data", "pattern"):
                             if hasattr(patt, a):
                                 val = getattr(patt, a)
                                 try:
@@ -220,7 +203,7 @@ def _wrap_module(raw_mod):
                 pl = getattr(self._raw, "patterns", None)
                 if pl and idx < len(pl):
                     p = pl[idx]
-                    for a in ("rows","data"):
+                    for a in ("rows", "data"):
                         if hasattr(p, a):
                             val = getattr(p, a)
                             try:
@@ -233,7 +216,7 @@ def _wrap_module(raw_mod):
             return [["REST"] * ch for _ in range(4)]
     return ModuleWrapper(raw_mod)
 
-def dump_binding_info():
+def dump_binding_info() -> str:
     if _binding is None:
         return "No binding detected."
     try:
@@ -242,23 +225,23 @@ def dump_binding_info():
     except Exception as e:
         return f"Binding: {_binding_name}\nError listing attrs: {e}"
 
-def run_diagnostics(data: Optional[bytes] = None):
-    lines=[]
+def run_diagnostics(data: Optional[bytes] = None) -> str:
+    lines = []
     if _binding is None:
-        lines.append("No binding present (module_tracker).")
+        lines.append("No binding detected (module_tracker).")
         return "\n".join(lines)
     lines.append(f"Detected binding: {_binding_name}")
     try:
         attrs = _list_attrs(_binding)
-        lines.append("Top-level attrs (partial): " + ", ".join(attrs[:200]) + ("..." if len(attrs)>200 else ""))
+        lines.append("Top-level attrs (partial): " + ", ".join(attrs[:200]) + ("..." if len(attrs) > 200 else ""))
     except Exception as e:
-        lines.append(f"Error listing attrs: {e}")
+        lines.append(f"Error listing attributes: {e}")
     if data is None:
-        lines.append("\nNo data provided for constructor diagnostics.")
+        lines.append("\nNo bytes provided to run constructor diagnostics.")
         return "\n".join(lines)
     raw, attempts = _attempt_with_bytes(_binding, data)
     lines.append("\nConstructor attempts:")
-    for desc,res in attempts:
+    for desc, res in attempts:
         lines.append(f"- {desc}: {res}")
     if raw is None:
         lines.append("\nResult: FAILED to construct module object.")
@@ -274,11 +257,11 @@ def run_diagnostics(data: Optional[bytes] = None):
 
 def load_module_from_bytes(data: bytes):
     if _binding is None:
-        raise ImportError("No module_tracker binding installed.")
+        raise ImportError("No module-tracker binding installed.")
     raw, attempts = _attempt_with_bytes(_binding, data)
     if raw is None:
-        lines=["Failed to construct module object. Attempts:"]
-        for d,r in attempts:
+        lines = ["Failed to construct module object. Attempts:"]
+        for d, r in attempts:
             lines.append(f"- {d}: {r}")
         lines.append("Binding info:")
         lines.append(dump_binding_info())
