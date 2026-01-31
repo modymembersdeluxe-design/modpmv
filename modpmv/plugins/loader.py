@@ -1,28 +1,34 @@
 """
-Plugin discovery (V2): find plugins in a folder or via entry points and return manifest.
+Plugin discovery & manifest (V3):
+- discover_plugins(plugin_folder) -> {"audio": {...}, "visual": {...}}
+- list_plugins_manifest(plugin_folder) -> list of metadata dicts (name,type,description,tags,class)
+Supports:
+- entry points (modpmv.plugins.audio / modpmv.plugins.visual)
+- local plugins folder (plugins/audio, plugins/visual)
+- examples/plugins used by default in GUI
 """
 import os
 import sys
 import importlib.util
-from typing import Dict, Any, List, Optional
 from importlib.metadata import entry_points
-from modpmv.plugins.base import AudioPlugin, VisualPlugin
+from typing import Dict, Any, List, Optional
+from .base import AudioPlugin, VisualPlugin
 
 def _load_from_entry_points(group: str) -> Dict[str, Any]:
-    plugins = {}
+    found = {}
     try:
         eps = entry_points()
-        groups = eps.select(group=group) if hasattr(eps, "select") else eps.get(group, [])
+        items = eps.select(group=group) if hasattr(eps, "select") else eps.get(group, [])
+        for ep in items:
+            try:
+                cls = ep.load()
+                key = getattr(cls, "name", ep.name)
+                found[key] = cls
+            except Exception:
+                continue
     except Exception:
-        groups = []
-    for ep in groups:
-        try:
-            obj = ep.load()
-            key = getattr(obj, "name", ep.name)
-            plugins[key] = obj
-        except Exception:
-            continue
-    return plugins
+        pass
+    return found
 
 def _load_from_folder(folder: str) -> Dict[str, Any]:
     plugins = {}
@@ -61,7 +67,7 @@ def discover_plugins(plugin_folder: Optional[str] = "plugins") -> Dict[str, Dict
     if plugin_folder:
         audio.update(_load_from_folder(os.path.join(plugin_folder, "audio")))
         visual.update(_load_from_folder(os.path.join(plugin_folder, "visual")))
-        # also allow flat plugin files
+        # flat fallback
         audio.update(_load_from_folder(plugin_folder))
         visual.update(_load_from_folder(plugin_folder))
     return {"audio": audio, "visual": visual}
@@ -72,13 +78,15 @@ def list_plugins_manifest(plugin_folder: Optional[str] = "plugins") -> List[Dict
     for ptype in ("audio","visual"):
         for name, cls in discovered.get(ptype, {}).items():
             try:
-                manifest.append({
+                meta = {
                     "name": getattr(cls, "name", name),
                     "type": ptype,
-                    "description": getattr(cls, "description", ""),
-                    "tags": getattr(cls, "tags", []),
+                    "description": getattr(cls, "description", "") or "",
+                    "tags": getattr(cls, "tags", []) or [],
+                    "version": getattr(cls, "version", "0.0.1"),
                     "class": cls
-                })
+                }
+                manifest.append(meta)
             except Exception:
                 continue
     manifest.sort(key=lambda m: (m["type"], m["name"]))

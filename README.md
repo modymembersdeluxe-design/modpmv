@@ -1,50 +1,68 @@
-# ModPMV V2
+# ModPMV — V3 (Overview)
 
-ModPMV V2 — a WIP Python GUI & utilities for automatic generation of YTPMVs (audio + visuals).
+ModPMV V3 is a major update to the ModPMV toolkit: a Python GUI + pipeline for automatic generation of YTPMV-style audio + visuals from tracker modules and asset folders. V3 emphasizes:
 
-High-level features
-- .mod-like module parser (text starter + extensible to binary formats)
-- Audio renderer: maps tracker samples to audio assets and assembles tracks automatically
-- Video renderer: maps tracker events to video samples, images and generative visuals
-- Plugin system: Audio / Visual / VisualEffect / LayeredVisual plugins with discovery
-- Randomization & automatic generation modes for rapid YTPMV prototyping
-- Keyframing and simple graph interpolation API for animated parameters
-- Exporter to create a YTPMV-style package (assets + manifest)
+- Robust binary tracker support (.it, .xm, .mod) via OpenMPT adapter (optional binding)
+- Full plugin manifest: Audio/Visual/Effect/Layered plugins with tags, metadata and preview helpers
+- Per-channel (1–32) mapping of tracker patterns → video samples / image fallbacks / generated visuals
+- GUI improvements: Qt binding compatibility (PyQt6 / PySide6 / PyQt5 / PySide2 fallback), plugin config editor (JSON + simple form presets), live preview, render queue, and caching
+- Render performance options: moviepy path (easy) and ffmpeg-pipelined path (faster/stable for long renders)
+- YTPMV exporter that packages used assets + manifest and precise timestamp mapping
+- Enhanced docs, changelog and tests scaffold
 
-Quick start
-1. Install dependencies:
+This README contains quick start steps, V3 highlights, project layout, and links to tutorials.
+
+Quick start (short)
+1. Create & activate a virtualenv:
+   python -m venv .venv
+   .\.venv\Scripts\activate
+2. Install runtime deps:
    pip install -r requirements.txt
-   Ensure ffmpeg is installed and on PATH.
-2. Prepare assets:
+3. Install ffmpeg (add to PATH) or install imageio-ffmpeg.
+4. Copy or prepare asset folders:
    - assets/audio_samples/
    - assets/video_samples/
    - assets/images/
-3. Run GUI:
+5. Run GUI:
    python -m modpmv.gui
-4. Load a .mod text file (see examples/), select assets, optional plugins, then Render & Export.
+6. Use the GUI to load a tracker module (.it/.xm/.mod) or text .mod, pick assets and plugin presets, run Preview then Full Export.
 
-Project layout (key files)
+Notes
+- OpenMPT parsing requires an external binding (e.g., `pyopenmpt` or `openmpt`). If not installed, the app falls back to a text-format parser for prototyping.
+- On Windows, use the GUI compatibility fallback if PyQt6 import fails (the GUI tries PySide6 / PyQt5 / PySide2).
+- For production rendering of many hours or HD assets, prefer enabling the ffmpeg pipeline and running renders headless via the CLI with a render queue.
+
+Project layout (important files)
+- pyproject.toml, requirements.txt
 - modpmv/
+  - __init__.py
   - mod_parser.py
+  - openmpt_adapter.py
   - assets.py
   - audio_renderer.py
   - video_renderer.py
   - plugins/
     - base.py
     - loader.py
-  - ytpmv_exporter.py
   - gui.py
+  - cli.py
+  - ytpmv_exporter.py
+  - cache.py
+  - utils.py
 - examples/
-  - plugins/ (example plugins)
-  - examples.mod (sample mod text)
-- README.md, TUTORIAL-ModPMV.md, requirements.txt, pyproject.toml
+  - plugins/ (example plugin implementations)
+  - examples.mod (sample text module)
+- docs/
+  - TUTORIAL-ModPMV.md
+  - RUNNING-MODPMV-WINDOWS.md
+- tests/ (smoke tests scaffold)
 
-Notes
-- The included parsers/renderers are intentionally prototyping-grade. For production, replace the parser with an accurate binary .mod parser (ProTracker/IT/XM) or provide a converter.
-- MoviePy is convenient but can be slow for long HD renders. Consider ffmpeg frame pipelines for heavy workloads.
-- Plugin authors: use tags and metadata to make your plugin discoverable in the GUI.
+Changelog (high level)
+- V3: Add OpenMPT-backed parsing, channel-aware video rendering, plugin manifest & preview, GUI improvements, ffmpeg pipeline option, caching, improved exporter with timestamp mapping.
 
-If you want, I can:
-- Add a JSON config editor to the GUI for plugin config
-- Add a preview/thumbnail generator and cache
-- Implement a waveform visual plugin and a beat-slicer audio plugin as examples
+If you'd like, I can:
+- Wire an advanced per-channel mapping UI in the GUI (drag-drop channel → asset mapping).
+- Implement two polished example plugins: WaveformVisual (GPU-ready path) and BeatSlicerAudio with unit tests.
+- Add GitHub Actions CI (install ffmpeg via apt on runners, run smoke tests).
+
+Read the docs in `docs/` for full installation and platform-dependent notes.

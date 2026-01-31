@@ -1,15 +1,23 @@
 [project]
 name = "modpmv"
-version = "0.2.0"
-description = "ModPMV V2 — Automatic YTPMV generation (audio + visuals) with a plugin system"
+version = "0.3.0"
+description = "ModPMV V3 — Automatic YTPMV generation (audio + visuals) with plugin-driven pipeline and OpenMPT support"
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{name="ModPMV Contributors"}]
-dependencies = [
-  "PyQt6>=6.5",
-  "pydub>=0.25.1",
-  "moviepy>=1.0.3",
-  "librosa>=0.10.0",
-  "numpy>=1.24",
-  "soundfile>=0.12.1"
-]
+
+[project.dependencies]
+PyQt6 = ">=6.5"
+pydub = ">=0.25.1"
+moviepy = ">=1.0.3"
+librosa = ">=0.10.0"
+numpy = ">=1.24"
+soundfile = ">=0.12.1"
+imageio-ffmpeg = ">=0.4.7"
+
+# Optional extras (for users on legacy Windows or advanced visuals)
+# Use `pip install .[extras]` or `pip install -r requirements-extras.txt`
+[project.optional-dependencies]
+legacy-qt = ["PyQt5>=5.15; platform_system=='Windows'"]
+advanced = ["opencv-python", "numba"]
+openmpt = ["pyopenmpt; extra == 'openmpt'"]
